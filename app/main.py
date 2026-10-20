@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select, text,func
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -53,6 +53,30 @@ def health_check(db: Session = Depends(get_db)):
             status_code=503,
             detail="Database unavailable",
         )
+
+@app.get("/metrics/jobs")
+def job_metrics(db: Session = Depends(get_db)):
+    statement = (
+        select(Job.status, func.count(Job.id))
+        .group_by(Job.status)
+    )
+
+    results = db.execute(statement).all()
+
+    counts = {
+        "queued": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+
+    for status, count in results:
+        counts[status] = count
+
+    return {
+        "total": sum(counts.values()),
+        "by_status": counts,
+    }
 
 
 @app.post("/jobs", response_model=JobResponse, status_code=201)

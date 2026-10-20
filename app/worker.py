@@ -34,7 +34,7 @@ def execute_job(job: Job) -> None:
             subject,
         )
 
-        time.sleep(60)  # Simulate a long-running task
+        time.sleep(2)  
 
     elif job.job_type == "add_numbers":
         a = job.payload.get("a")
@@ -98,8 +98,11 @@ def claim_job(db: Session):
     return job.id
 
 
+
 def process_job(job_id: int) -> None:
     """Execute a job and record its outcome."""
+
+    started_at = time.perf_counter()
 
     with SessionLocal() as db:
         job = db.get(Job, job_id)
@@ -109,16 +112,22 @@ def process_job(job_id: int) -> None:
 
         # Avoid updating a job that another worker has reclaimed.
         if job.status != "running" or job.locked_by != WORKER_ID:
-            logger.warning("Job %s is no longer owned by this worker", job_id)
+            logger.warning(
+                "Job %s is no longer owned by worker %s",
+                job_id,
+                WORKER_ID,
+            )
             return
+
+        job_type = job.job_type
+        outcome = "failed"
 
         try:
             execute_job(job)
 
             job.status = "completed"
             job.last_error = None
-
-            logger.info("Job %s completed", job.id)
+            outcome = "completed"
 
         except Exception as error:
             job.last_error = str(error)
@@ -133,6 +142,7 @@ def process_job(job_id: int) -> None:
                 job.run_at = datetime.now(timezone.utc) + timedelta(
                     seconds=delay
                 )
+                outcome = "retry_scheduled"
 
                 logger.warning(
                     "Job %s failed on attempt %s. "
@@ -153,7 +163,21 @@ def process_job(job_id: int) -> None:
         finally:
             job.locked_by = None
             job.locked_until = None
-            db.commit()
+
+        # Commit before reporting the final outcome.
+        db.commit()
+
+        duration_ms = (time.perf_counter() - started_at) * 1000
+
+        logger.info(
+            "Job processing finished: job_id=%s worker_id=%s "
+            "job_type=%s outcome=%s duration_ms=%.2f",
+            job_id,
+            WORKER_ID,
+            job_type,
+            outcome,
+            duration_ms,
+        )
 
 
 def run_worker():
